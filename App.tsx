@@ -82,6 +82,7 @@ type GridItem = {
   width: number;
   height: number;
   isAd?: boolean;
+  blurData?: string;
 };
 
 type SelectedItem = {
@@ -121,6 +122,7 @@ function AppContent() {
   const [isSheetOpen, setIsSheetOpen] = useState(false);
 
   const sheetRef = useRef<BottomSheet>(null);
+  const initialRequestIdRef = useRef(0);
   const snapPoints = useMemo(() => ['25%', '55%', '90%'], []);
 
   useEffect(() => {
@@ -358,6 +360,20 @@ function AppContent() {
           const variantOrder = ['gif', 'webp', 'mp4', 'webm', 'jpg'];
 
           let mediaUrl = '';
+          const rawBlurPreview: string | undefined =
+            item && typeof item.blur_preview === 'string'
+              ? (item.blur_preview as string)
+              : undefined;
+
+          // Normalize blurData so we only keep the raw base64 payload, not the data URL prefix
+          let blurData: string | undefined;
+          if (rawBlurPreview) {
+            const commaIndex = rawBlurPreview.indexOf(',');
+            blurData =
+              rawBlurPreview.startsWith('data:image') && commaIndex !== -1
+                ? rawBlurPreview.slice(commaIndex + 1)
+                : rawBlurPreview;
+          }
           let width = 1;
           let height = 1;
 
@@ -404,6 +420,7 @@ function AppContent() {
             url: mediaUrl,
             width,
             height,
+            blurData,
           };
         })
         .filter(Boolean) as GridItem[];
@@ -433,31 +450,46 @@ function AppContent() {
   );
 
   const loadInitial = useCallback(async () => {
+    const requestId = ++initialRequestIdRef.current;
     try {
       setLoading(true);
       const page = await fetchPage(null);
+      // Ignore stale responses from older searches
+      if (requestId !== initialRequestIdRef.current) {
+        return;
+      }
       setItems(page.items);
       setNextCursor(page.nextCursor);
     } catch {
+      if (requestId !== initialRequestIdRef.current) {
+        return;
+      }
       setItems([]);
       setNextCursor(null);
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (requestId === initialRequestIdRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [fetchPage]);
 
   useEffect(() => {
     loadInitial();
-  }, [loadInitial, pickerType, provider]);
+  }, [loadInitial, pickerType, provider, query]);
 
   const loadMore = useCallback(async () => {
     if (loadingMore || loading || !nextCursor) {
       return;
     }
+    const requestId = initialRequestIdRef.current;
     try {
       setLoadingMore(true);
       const page = await fetchPage(nextCursor);
+      // Ignore stale pagination responses from a previous search
+      if (requestId !== initialRequestIdRef.current) {
+        return;
+      }
       setItems(previous => [...previous, ...page.items]);
       setNextCursor(page.nextCursor);
     } finally {
@@ -473,6 +505,10 @@ function AppContent() {
   const handleSearch = useCallback(() => {
     loadInitial();
   }, [loadInitial]);
+
+  const handleClearSearch = useCallback(() => {
+    setQuery('');
+  }, [setQuery]);
 
   const handleScroll = useCallback(
     (event: any) => {
@@ -588,11 +624,22 @@ function AppContent() {
           style={styles.gridItem}
           onPress={() => handleSelect(item)}
         >
-          <FastImage
-            source={{ uri: item.url }}
-            style={[styles.gridImage, { aspectRatio }]}
-            resizeMode={FastImage.resizeMode.cover}
-          />
+          <View style={[styles.gridImageWrapper, { aspectRatio }]}>
+            {item.blurData ? (
+              <FastImage
+                source={{
+                  uri: `data:image/jpeg;base64,${item.blurData}`,
+                }}
+                style={styles.gridImage}
+                resizeMode={FastImage.resizeMode.cover}
+              />
+            ) : null}
+            <FastImage
+              source={{ uri: item.url }}
+              style={styles.gridImage}
+              resizeMode={FastImage.resizeMode.cover}
+            />
+          </View>
         </TouchableOpacity>
       );
     },
@@ -712,12 +759,14 @@ function AppContent() {
               onFocus={handleSearchFocus}
               onSubmitEditing={handleSearch}
             />
-            <TouchableOpacity
-              style={styles.searchButton}
-              onPress={handleSearch}
-            >
-              <Text style={styles.searchButtonText}>Search</Text>
-            </TouchableOpacity>
+            {query.length > 0 ? (
+              <TouchableOpacity
+                style={styles.clearButton}
+                onPress={handleClearSearch}
+              >
+                <Text style={styles.clearButtonText}>✕</Text>
+              </TouchableOpacity>
+            ) : null}
           </View>
         </View>
 
@@ -922,6 +971,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     marginRight: 8,
   },
+  clearButton: {
+    paddingHorizontal: 8,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#cccccc',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 8,
+  },
+  clearButtonText: {
+    color: '#333333',
+    fontSize: 13,
+  },
   searchButton: {
     paddingHorizontal: 12,
     height: 36,
@@ -962,6 +1025,15 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   gridImage: {
+    width: '100%',
+    height: '100%',
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  gridImageWrapper: {
     width: '100%',
   },
   adContainer: {
